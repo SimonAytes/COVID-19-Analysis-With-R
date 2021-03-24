@@ -1,0 +1,710 @@
+---
+title: "Quiz 4"
+author: "Simon Aytes"
+date: "3/21/2021"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Import the datasets and libraries
+```{r}
+#Import libraries
+library(readxl)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(rworldmap)
+
+#Read in the COVID-19 data
+covid19 <- read_excel("COVID-19-geographic-disbtribution-worldwide.xlsx")
+#Read in the Human Development Index (HDI) data
+hdi <- read.csv("hdi.csv")
+```
+
+## Create custom theme
+```{r}
+simons_theme <- theme_minimal(base_family = "Roboto Condensed", base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = rel(1.7)),
+        plot.subtitle = element_text(face = "plain", size = rel(1.3), color = "grey70"),
+        plot.caption = element_text(face = "italic", size = rel(0.7), color = "grey70", hjust = 0),
+        legend.title = element_text(face = "bold"),
+        strip.text = element_text(face = "bold", size = rel(1.1), hjust = 0),
+        axis.title = element_text(face = "bold"),
+        axis.title.x = element_text(margin = margin(t = 10), hjust = 0),
+        axis.title.y = element_text(margin = margin(r = 10), hjust = 1))
+
+theme_set(theme_classic())
+
+# Create the vizualization color palette
+viz_colors <- c("#00AFFF", "#B49AFF", "#FF7ACD", "#FF7B74", "#FFA600")
+```
+
+
+# Clean and format the data
+
+## Parse the data into final form for analysis
+```{r}
+# Total Cases by Country
+total_cases_by_country <- covid19 %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(total_cases = sum(cases))
+
+# Total Deaths by Country
+total_deaths_by_country <- covid19 %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(total_deaths = sum(deaths))
+
+# Average Daily Cases by Country
+mean_daily_cases_by_country <- covid19 %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(mean_cases = as.double(format(round(mean(cases), 2), nsmall = 2)))
+
+# Average Daily Deaths by Country
+mean_daily_deaths_by_country <- covid19 %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(mean_deaths = as.double(format(round(mean(deaths), 2), nsmall = 2)))
+
+# Population by Country (as of 2019)
+population_by_country <- covid19 %>%
+  select(countriesAndTerritories, popData2019) %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(pop = mean(popData2019))
+
+# Names of Continents by Country
+continents <- covid19 %>%
+  select(countriesAndTerritories, continentExp) %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(continentExp = continentExp)
+names(continents) = c("country", "continent")
+continents <- continents[!duplicated(continents), ]
+
+# ISO3 Codes for the countries (for geographical mapping)
+iso3_codes <- covid19 %>%
+  select(countriesAndTerritories, countryterritoryCode) %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(iso3 = countryterritoryCode)
+iso3_codes <- iso3_codes[!duplicated(iso3_codes), ]
+names(iso3_codes) = c("country", "iso3")
+
+# Human Development Index (HDI) by Country (as of 2018)
+hdi_by_country <- hdi %>%
+  select(country, X2018)
+```
+
+## Combine parsed data into final data
+```{r}
+# Combine all data into one data frame. Rename columns
+data <- merge(population_by_country, mean_daily_cases_by_country, by="countriesAndTerritories", all=FALSE)
+data <- merge(data, mean_daily_deaths_by_country, by="countriesAndTerritories", all=FALSE)
+data <- merge(data, total_cases_by_country, by="countriesAndTerritories", all=FALSE)
+data <- merge(data, total_deaths_by_country, by="countriesAndTerritories", all=FALSE)
+names(data) <- c("country", "population", "avg_daily_cases", "avg_daily_deaths", "total_cases", "total_deaths")
+data <- merge(data, hdi_by_country, by = "country", all = FALSE)
+data <- merge(data, continents, by = "country", all = FALSE)
+names(data)[7] <- "hdi"
+data <- data %>% mutate(cases_per_100k = (total_cases / population) * 100000)
+data <- data %>% mutate(deaths_per_100k = (total_deaths / population) * 100000)
+data <- data %>% mutate(population_million = population / 1000000)
+data <- merge(data, iso3_codes, by="country", all = FALSE)
+data <- data[c(1,8,12,2,11,5,3,9,6,4,10,7)]
+
+# Preview Data
+head(data)
+```
+# Interpret and further clean the data
+
+## Find countries left out from the dataset
+
+The initial number of countries left out of the calculation was 67. This was fixed by cross-referencing the two input files and normalizing names accross the two. The number now stands at 34.
+
+```{r}
+# Population by Country (as of 2019)
+countries_left_out <- left_out_countries %>%
+  select(countriesAndTerritories, popData2019) %>%
+  group_by(countriesAndTerritories) %>%
+  summarize(pop = mean(popData2019))
+
+countries_left_out
+write.csv(countries_left_out, "not_included.csv")
+```
+
+## Address outliers
+
+Taking out the outliers now will lead to the data being more reliable as it will not be skewed by a single point. The outliers I identified were Andorra and Luxembourg. These countries high number of COVID-19 cases along with their small population sizes led to the "Average COVID-19 Cases Per 100 Citizens" metric (calculated later) skewed and produced unreliable results. 
+
+They will be removed, but will also be listed here for the sake of record-keeping.
+
+```{r}
+# Display outliers
+outliers <- data %>% filter(country == "Andorra" | country == "Luxembourg")
+outliers
+
+# Remove outliers from data
+data <- data %>% filter(country != "Andorra" & country != "Luxembourg")
+```
+
+```{r}
+america_mean_data <- data %>% filter(continent == "America")
+america_mean <- mean(america_mean_data$hdi)
+
+africa_mean_data <- data %>% filter(continent == "Africa")
+africa_mean <- mean(africa_mean_data$hdi)
+
+asia_mean_data <- data %>% filter(continent == "Asia")
+asia_mean <- mean(asia_mean_data$hdi)
+
+europe_mean_data <- data %>% filter(continent == "Europe")
+europe_mean <- mean(europe_mean_data$hdi)
+
+oceania_mean_data <- data %>% filter(continent == "Oceania")
+oceania_mean <- mean(oceania_mean_data$hdi)
+
+```
+
+
+# Data overview
+
+The table below lists the variables from the final data and their descriptions.
+
+**Variable** | **Description**
+-------|---------
+country | _Name of the country_
+continent | _Continent where the country is located_
+population | _Population of the country as of 2019_
+avg_daily_cases | _Average number of daily confirmed COVID-19 cases^1^_
+total_cases | _Total number of cases in the country^1^_
+hdi | _Human Development Index (HDI) for the country^2^_
+cases_per_100k | _Number of COVID-19 cases per 100,000 citizens_
+
+_^1^ --- Data was gathered from 12/31/2019 through 12/14/2020_
+
+_^2^ --- [Human Development Index](https://ourworldindata.org/human-development-index)_
+
+## HDI vs. COVID-19 Cases
+```{r}
+hdi_vs_covid_plot <- ggplot(data = data, aes(x = hdi, y = cases_per_100k, color = continent, alpha = 0.5, size = population_million)) +
+  geom_point() + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (World)",
+       subtitle = "12/31/2019 through 12/14/2020",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       color = "Continent",
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+  scale_color_manual(values = c("#00AFFF", "#B49AFF", "#FF7ACD", "#FF7B74", "#FFA600")) +
+  xlim(0.35, 1) +
+  ylim(0, 7000)
+
+
+#00afff
+#b49aff
+#ff7acd
+#ff7b74
+#ffa600
+
+hdi_vs_covid_plot
+```
+
+
+## Human Development Index (HDI) accross different countries
+```{r}
+# Africa
+africa_data <- data %>% filter(continent == "Africa")
+hdi_vs_covid_africa <- ggplot(data = africa_data, aes(x = hdi, y = cases_per_100k, alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[1]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (Africa)",
+       subtitle = "Average HDI: 0.55",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+    xlim(0.35, 1) +
+    ylim(0, 7000)
+
+hdi_vs_covid_africa
+
+# North America
+america_data <- data %>% filter(continent == "America")
+hdi_vs_covid_america <- ggplot(data = america_data, aes(x = hdi, y = cases_per_100k, color = "yellowgreen", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[2]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (Americas)",
+       subtitle = "Average HDI: 0.75",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) 
+
+hdi_vs_covid_america
+
+# Asia
+asia_data <- data %>% filter(continent == "Asia")
+hdi_vs_covid_asia <- ggplot(data = asia_data, aes(x = hdi, y = cases_per_100k, color = "green", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[3]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (Asia)",
+       subtitle = "Average HDI: 0.73",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+    xlim(0.35, 1) +
+    ylim(0, 7000)
+
+hdi_vs_covid_asia
+
+# Europe
+eurpoe_data <- data %>% filter(continent == "Europe")
+hdi_vs_covid_eurpode <- ggplot(data = eurpoe_data, aes(x = hdi, y = cases_per_100k, color = "green", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[4]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (Europe)",
+       subtitle = "Average HDI: 0.86",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+    xlim(0.35, 1) +
+    ylim(0, 7000)
+
+hdi_vs_covid_eurpode
+
+# Asia
+oceania_data <- data %>% filter(continent == "Oceania")
+hdi_vs_covid_oceania <- ggplot(data = oceania_data, aes(x = hdi, y = cases_per_100k, color = "red", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[5]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (Oceania)",
+       subtitle = "Average HDI: 0.71",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+    xlim(0.35, 1) +
+    ylim(0, 7000)
+
+hdi_vs_covid_oceania
+```
+
+## HDI vs. COVID-19 Deaths (world)
+```{r}
+hdi_vs_deaths_plot <- ggplot(data = data, aes(x = hdi, y = deaths_per_100k, color = continent, alpha = 0.5, size = population_million)) +
+  geom_point() + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (World)",
+       subtitle = "12/31/2019 through 12/14/2020",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       color = "Continent",
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+  scale_color_manual(values = c("#00AFFF", "#B49AFF", "#FF7ACD", "#FF7B74", "#FFA600")) +
+  xlim(0.35, 1) +
+  ylim(0, 175)
+
+
+hdi_vs_deaths_plot
+```
+
+## HDI vs COVID-19 Deaths accross countries
+```{r}
+# Africa
+hdi_vs_deaths_africa <- ggplot(data = africa_data, aes(x = hdi, y = deaths_per_100k, color = "red", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[1]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (Africa)",
+       subtitle = "Average HDI: 0.55",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma) +
+  xlim(0.35, 1) +
+  ylim(0, 150)
+
+hdi_vs_deaths_africa
+
+
+# North America
+hdi_vs_deaths_america <- ggplot(data = america_data, aes(x = hdi, y = deaths_per_100k, color = "yellowgreen", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[2]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (Americas)",
+       subtitle = "Average HDI: 0.75",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma)+
+  xlim(0.35, 1) +
+  ylim(0, 175)
+
+hdi_vs_deaths_america
+
+# Asia
+hdi_vs_deaths_asia <- ggplot(data = asia_data, aes(x = hdi, y = deaths_per_100k, color = "green", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[3]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (Asia)",
+       subtitle = "Average HDI: 0.73",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma)+
+  xlim(0.35, 1) +
+  ylim(0, 175)
+
+hdi_vs_deaths_asia
+
+# Europe
+hdi_vs_deaths_eurpode <- ggplot(data = eurpoe_data, aes(x = hdi, y = deaths_per_100k, color = "green", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[4]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (Europe)",
+       subtitle = "Average HDI: 0.86",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma)+
+  xlim(0.35, 1) +
+  ylim(0, 175)
+
+hdi_vs_deaths_eurpode
+
+# Asia
+hdi_vs_deaths_oceania <- ggplot(data = oceania_data, aes(x = hdi, y = deaths_per_100k, color = "red", alpha = 0.5, size = population_million)) +
+  geom_point(color = viz_colors[5]) + 
+  simons_theme + 
+  labs(title = "COVID-19 Deaths vs. HDI (Oceania)",
+       subtitle = "Average HDI: 0.71",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Deaths (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_discrete(guide = "none") +
+  scale_size_continuous(labels = scales::comma)+
+  xlim(0.35, 1) +
+  ylim(0, 175)
+
+hdi_vs_deaths_oceania
+```
+
+
+```{r}
+worldMapData <- joinCountryData2Map(data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+america_data <- data %>% filter(continent == "America")
+americaMapData <- joinCountryData2Map(america_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+asia_data <- data %>% filter(continent == "Asia")
+asiaMapData <- joinCountryData2Map(asia_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+europe_data <- data %>% filter(continent == "Europe")
+europeMapData <- joinCountryData2Map(europe_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+africa_data <- data %>% filter(continent == "Africa")
+africaMapData <- joinCountryData2Map(africa_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+oceania_data <- data %>% filter(continent == "Oceania")
+oceaniaMapData <- joinCountryData2Map(oceania_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+world <- mapCountryData(worldMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of the World, 2018",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "World")#Region encompassed by the map
+
+asia <- mapCountryData(asiaMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of Asia",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Asia")#Region encompassed by the map
+
+north_america <- mapCountryData(americaMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of North America",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "North America")#Region encompassed by the map
+
+south_america <- mapCountryData(americaMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of South America",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Latin America")#Region encompassed by the map
+
+europe <- mapCountryData(europeMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of Europe",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(0.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Europe")#Region encompassed by the map
+
+africa <- mapCountryData(africaMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of Africa",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(0.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Africa")#Region encompassed by the map
+
+oceania <- mapCountryData(oceaniaMapData,
+              nameColumnToPlot = "hdi", #Name of the data that acts as the "fill" option
+              mapTitle = "Human Development Index (HDI) of Oceania",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Oceania")#Region encompassed by the map
+```
+
+```{r}
+worldMapData <- joinCountryData2Map(data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+america_data <- data %>% filter(continent == "America")
+americaMapData <- joinCountryData2Map(america_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+asia_data <- data %>% filter(continent == "Asia")
+asiaMapData <- joinCountryData2Map(asia_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+europe_data <- data %>% filter(continent == "Europe")
+europeMapData <- joinCountryData2Map(europe_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+oceania_data <- data %>% filter(continent == "Oceania")
+oceaniaMapData <- joinCountryData2Map(oceania_data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+world <- mapCountryData(worldMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (World)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "World")#Region encompassed by the map
+
+asia <- mapCountryData(asiaMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (Asia)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Asia")#Region encompassed by the map
+
+north_america <- mapCountryData(americaMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (North America)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "North America")#Region encompassed by the map
+
+south_america <- mapCountryData(americaMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (South America)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Latin America")#Region encompassed by the map
+
+europe <- mapCountryData(europeMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (Europe)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(0.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Europe")#Region encompassed by the map
+
+oceania <- mapCountryData(oceaniaMapData,
+              nameColumnToPlot = "cases_per_100k", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases per 100k (Oceania)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "Oceania")#Region encompassed by the map
+```
+
+```{r}
+worldTotalMapData <- joinCountryData2Map(data, #Data
+                              joinCode = "ISO3", #How countries are referenced
+                              mapResolution = "high", #Resolution of the map
+                              nameJoinColumn = "iso3") #Name of the column containing the country names
+
+worldTotal <- mapCountryData(worldTotalMapData,
+              nameColumnToPlot = "total_cases", #Name of the data that acts as the "fill" option
+              mapTitle = "COVID-19 Cases (World)",
+              catMethod = "pretty", #Categorical or color
+              colourPalette = "heat", #Name of the color palette to use
+              missingCountryCol = gray(.6), #Color of the missing countries
+              oceanCol = gray(.8), #Color of the ocean
+              borderCol = gray(0), #Color of the borders
+              lwd = 0.15, #Width of the borders
+              numCats = 20, #Number of steps in the color palette
+              mapRegion = "World")#Region encompassed by the map
+```
+
+
+# Average Daily Cases by Region
+```{r}
+af_d <- data %>% filter(continent == "Europe")
+af_s <- mean(af_d$deaths_per_100k)
+#Europe = 53
+#World = 23
+```
+
+```{r}
+# World facet plot
+world_cases_facet_data <- data %>% filter(continent != "Oceania")
+hdi_vs_covid_facet <- ggplot(data = world_cases_facet_data, 
+                             aes(x = hdi, 
+                                 y = cases_per_100k, 
+                                 color = continent, 
+                                 alpha = 0.5, 
+                                 size = population_million)) +
+  geom_point() + 
+  simons_theme + 
+  labs(title = "COVID-19 Cases vs. HDI (World)",
+       subtitle = "Average HDI: 0.71",
+       x = "Human Development Index (HDI)",
+       y = "Confirmed Cases (per 100k)",
+       size = "Population (million)", 
+       caption = "Source: ECDC, Our World in Data") + 
+  scale_alpha(guide = "none") +
+  scale_color_manual(values = c("#00AFFF", "#B49AFF", "#FF7ACD", "#FF7B74", "#FFA600")) +
+  scale_size_continuous(labels = scales::comma) +
+    xlim(0.35, 1) +
+    ylim(0, 7000) +
+  facet_wrap(vars(continent))
+
+hdi_vs_covid_facet
+```
+
+
